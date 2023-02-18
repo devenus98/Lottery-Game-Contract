@@ -3,6 +3,7 @@ use anchor_lang::{
     Discriminator,
 };
 use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
+use crate::utils::*;
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
@@ -10,266 +11,227 @@ declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 pub mod solana_anchor {
     use super::*;
 
-    pub fn init_lottery(
-        ctx : Context<InitLottery>,
+    pub fn init_pool(
+        ctx : Context<InitPool>,
         _bump : u8,
-        _ticket_price : u64,
-        _start_time : u64,
-        _period : u64,
+        _fee : u64,
         ) -> ProgramResult {
-        msg!("+ init lottery");
+        msg!("+ init_pool");
 
         let pool = &mut ctx.accounts.pool;
 
         pool.owner = *ctx.accounts.owner.key;
         pool.rand = *ctx.accounts.rand.key;
-        pool.token_mint = ctx.accounts.token_mint.key();
-        pool.ticket_price = _ticket_price;
-        pool.total_count = 0;
-        pool.prize_mint = ctx.accounts.prize_mint.key();
-        pool.start_time = _start_time;
-        pool.period = _period;
-        pool.ledger = *ctx.accounts.ledger.key;
-        pool.win_ticket = 0;
-        pool.winner = *ctx.accounts.owner.key;
-        pool.closed = false;
+        pool.fee_receiver = ctx.accounts.fee_receiver.key();
+        pool.winner = ctx.accounts.winner.key();
+        pool.fee = _fee;
         pool.bump = _bump;
 
-        let mut data = (&mut ctx.accounts.ledger).data.borrow_mut();
-        let mut new_data = LEDGER::discriminator().try_to_vec().unwrap();
-        new_data.append(&mut pool.key().try_to_vec().unwrap());
-        new_data.append(&mut (0 as u64).try_to_vec().unwrap());
-        for i in 0..new_data.len(){
+        Ok(())
+    }
+
+    pub fn start_round (
+        ctx: Context<StartRound>,
+        _round_name : String,
+        _total_ticket : u64,
+        _round_period : u64,
+    ) -> ProgramResult {
+        msg!("+ start new round");
+
+        let round_data = &mut ctx.accounts.round_data;
+        let clock = Clock::from_account_info(&ctx.accounts.clock)?;
+
+        round_data.pool = ctx.accounts.pool.key();
+        round_data.ticket_ledger = *ctx.accounts.ticket_ledger.key;
+        round_data.total_ticket = _total_ticket;
+        round_data.start_time = clock.unix_timestamp as u64;
+        round_data.round_period = _round_period;
+        round_data.tvl = 0;
+        round_data.claimed = false;
+        round_data.finished = false;
+        round_data.round_name = _round_name;
+        round_data.bump = _bump;
+
+        let mut data = (&mut ctx.accounts.ticket_ledger).data.borrow_mut();
+        let mut new_data = TicketList::discriminator().try_to_vec().unwrap();
+
+        new_data.append(&mut round_data.key().try_to_vec().unwrap());
+        new_data.append(&mut (0 as u32).try_to_vec().unwrap());
+
+        for i in 0..bew_data.len() {
             data[i] = new_data[i];
         }
-        let as_bytes = (MAX_LEN as u32).to_le_bytes();
-        for i in 0..4{
-            data[i] = as_bytes[i];
+
+        let vec_start = 8 + 32 + 4;
+        let as_bytes = (_total_ticket as u32).to_le_bytes();
+
+        for i in 0..4 {
+            data[vec_start + i] = as_bytes[i];
         }
 
         Ok(())
     }
 
-    pub fn new_lottery (
-        ctx : Context<NewLottery>,
-        _ticket_price : u64,
-        _start_time : u64,
-        _period : u64,
-        ) -> ProgramResult {
-        msg!("+ new lottery");
+    pub fn finish_round (
+        ctx: Context<FinishRound>
+    ) -> ProgramResult {
+        msg!("+ finish current round");
 
-        let pool = &mut ctx.accounts.pool;
+        let round = &mut ctx.accounts.round;
 
-        pool.ticket_price = _ticket_price;
-        pool.total_count = 0;
-        pool.prize_mint = ctx.accounts.prize_mint.key();
-        pool.start_time = _start_time;
-        pool.period = _period;
-        pool.ledger = *ctx.accounts.ledger.key;
-        pool.win_ticket = 0;
-        pool.winner = *ctx.accounts.owner.key;
-        pool.closed = false;
-
-        let mut data = (&mut ctx.accounts.ledger).data.borrow_mut();
-        let mut new_data = LEDGER::discriminator().try_to_vec().unwrap();
-        new_data.append(&mut pool.key().try_to_vec().unwrap());
-        new_data.append(&mut (0 as u64).try_to_vec().unwrap());
-        for i in 0..new_data.len(){
-            data[i] = new_data[i];
+        // Generate a random number
+        let recent_slothashes = &ctx.accounts.recent_blockhashes;
+        if cmp_pubkeys(&recent_slothashes.key(), &BLOCK_HASHES) {
+            msg!("recent_blockhashes is deprecated and will break soon");
         }
-        let as_bytes = (MAX_LEN as u32).to_le_bytes();
-        for i in 0..4{
-            data[i] = as_bytes[i];
+        if !cmp_pubkeys(&recent_slothashes.key(), &SlotHashes::id())
+            && !cmp_pubkeys(&recent_slothashes.key(), &BLOCK_HASHES)
+        {
+            return err!(PoolError::IncorrectSlotHashesPubkey);
         }
+
+        let data = recent_slothashes.data.borrow();
+        let most_recent = array_ref![data, 12, 8];
+
+        let winner_index = u64::from_le_bytes(*most_recent);
+        /////////////////////////////
+
+        let winner_ticket = get_winning_ticket(&ctx.accounts.ticket_ledger, winner_index as usize)?;
+
+        round.winner = winner_ticket.owner;
+        round.finished = true;
 
         Ok(())
     }
 
-    pub fn update_lottery (
-        ctx : Context<UpdateLottery>,
-        _ticket_price : u64,
-        _start_time : u64,
-        _period : u64,
-        ) -> ProgramResult {
-        msg!("+ update lottery");
-
-        let pool = &mut ctx.accounts.pool;
-
-        pool.ticket_price = _ticket_price;
-        pool.prize_mint = ctx.accounts.prize_mint.key();
-        pool.start_time = _start_time;
-        pool.period = _period;
-
-        Ok(())
-    }
-
-    pub fn buy_ticket (
+    pub buy_ticket (
         ctx : Context<BuyTicket>,
-        number : u64
-        ) -> ProgramResult {
+    ) -> ProgramResult {
         msg!("+ buy ticket");
 
         let pool = &mut ctx.accounts.pool;
-        let clock = Clock::from_account_info(&ctx.accounts.clock)?;
+        let round = &mut ctx.accounts.round;
 
-        if clock.unix_timestamp < pool.start_time as i64 {
-            return Err(PoolError::InvalidTime.into());
+        let last_number = get_last_number(&ctx.accounts.ticket_ledger)?;
+
+        if last_number > round.total_ticket - 1 {
+            return Err(PoolError::TicketLimitReached.into());
         }
 
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.user_token_account.to_account_info().clone(),
-            to: ctx.accounts.pool_token_account.to_account_info().clone(),
-            authority: ctx.accounts.owner.to_account_info().clone(),
-        };
-        
-        let cpi_program = ctx.accounts.token_program.to_account_info().clone();
-        
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-        
-        token::transfer(cpi_ctx, pool.ticket_price * number)?;
+        sol_transfer_without_seed(
+            SolTransferParamsWithoutSeed {
+                source: ctx.accounts.owner.clone(),
+                destination: pool.to_account_info().clone(),
+                system_program: ctx.accounts.system_program.to_account_info().clone(),
+                amount: 0.25 * 1_000_000_000,
+            }
+        )?;
 
-        for i in 0..number {
-            sell_ticket(&mut ctx.accounts.ledger, (pool.total_count + i as u32) as usize, *ctx.accounts.owner.key);
-        }
+        sol_transfer_without_seed(
+            SolTransferParamsWithoutSeed {
+                source: ctx.accounts.owner.clone(),
+                destination: ctx.accounts.fee_receiver.clone(),
+                system_program: ctx.accounts.system_program.to_account_info().clone(),
+                amount: 0.02 * 1_000_000_000,
+            }
+        )?;
 
-        pool.total_count = pool.total_count + number as u32;
+        set_ticket_owner(
+            &mut ctx.accounts.ticket_ledger, 
+            last_number as usize, 
+            TicketData {
+                ticket_index : (last_number + 1) as u64,
+                owner : *ctx.accounts.owner.key
+            }
+        );
+
+        set_last_number(&mut ctx.accounts.ticket_ledger, last_number + 1);
+
+        round.tvl += 0.25 * 1_000_000_000;
 
         Ok(())
     }
 
-    pub fn finish_lottery (
-        ctx : Context<FinishLottery>,
-        num : u32
-        ) -> ProgramResult {
-        msg!("+ finish lottery");
-        
-        let pool = &mut ctx.accounts.pool;
-        let clock = Clock::from_account_info(&ctx.accounts.clock)?;
-
-        if clock.unix_timestamp < (pool.start_time + pool.period) as i64 {
-            return Err(PoolError::InvalidTime.into());
-        }
-
-        pool.win_ticket = num;
-        pool.winner = get_ticket_owner(&mut ctx.accounts.ledger, num as usize)?;
-
-        Ok(())
-    }
-
-    pub fn get_prize (
-        ctx : Context<GetPrize>
-        ) -> ProgramResult {
-        msg!("+ get prize");
+    pub fn claim {
+        ctx : Context<Claim>
+    } -> ProgramResult {
+        msg!("+ claim");
 
         let pool = &mut ctx.accounts.pool;
-        let clock = Clock::from_account_info(&ctx.accounts.clock)?;
+        let round = &mut ctx.accounts.round;
 
-        if pool.closed == true {
-            return Err(PoolError::InvalidTime.into());
+        if !round.finished {
+            return Err(PoolError::RoundNotFinished.into());
         }
 
-        if clock.unix_timestamp < (pool.start_time + pool.period) as i64 {
-            return Err(PoolError::InvalidTime.into());
+        if *ctx.accounts.owner.key != round.winner && *ctx.accounts.owner.key != pool.winner {
+            return Err(PoolError::InvalidWInner.into());
         }
 
-        if *ctx.accounts.owner.key != pool.winner {
-            return Err(PoolError::InvalidWinner.into());
-        }
+        sol_transfer(
+            SolTransferParams {
+                source: pool.to_account_info().clone(),
+                destination: ctx.accounts.owner.clone(),
+                amount: round.tvl,
+            }
+        )?;
 
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.pool_token_account.to_account_info().clone(),
-            to: ctx.accounts.user_token_account.to_account_info().clone(),
-            authority: pool.to_account_info().clone(),
-        };
-
-        let cpi_program = ctx.accounts.token_program.to_account_info().clone();
-
-        let pool_signer_seeds = &[
-            pool.rand.as_ref(),
-            &[pool.bump],
-        ];
-
-        let pool_signer = &[&pool_signer_seeds[..]];
-
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, pool_signer);
-
-        token::transfer(cpi_ctx, 1)?;
-
-        pool.closed = true;
+        round.claimed = true;
+        round.tvl = 0;
 
         Ok(())
     }
 
-    pub fn emergency_withdraw(
-        ctx : Context<EmergencyWithdraw>
-        ) -> ProgramResult {
-        msg!("+withdraw");
-
-        let pool = &mut ctx.accounts.pool;
-
-        if *ctx.accounts.owner.key != pool.owner {
-            return Err(PoolError::InvalidOwner.into());
-        }
-
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.pool_token_account.to_account_info().clone(),
-            to: ctx.accounts.user_token_account.to_account_info().clone(),
-            authority: pool.to_account_info().clone(),
-        };
-
-        let cpi_program = ctx.accounts.token_program.to_account_info().clone();
-
-        let pool_signer_seeds = &[
-            pool.rand.as_ref(),
-            &[pool.bump],
-        ];
-
-        let pool_signer = &[&pool_signer_seeds[..]];
-
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, pool_signer);
-
-        token::transfer(cpi_ctx, 1)?;
-
-        Ok(())
-    }
-
-    pub fn withdraw(
-        ctx : Context<Withdraw>
-        ) -> ProgramResult {
+    pub fn withdraw {
+        ctx : Context<WithDraw>,
+        _amount : u64
+    } -> ProgramResult {
         msg!("+ withdraw");
 
         let pool = &mut ctx.accounts.pool;
+        let round = &mut ctx.accounts.round;
 
-        if *ctx.accounts.owner.key != pool.owner {
-            return Err(PoolError::InvalidOwner.into());
-        }
-
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.pool_token_account.to_account_info().clone(),
-            to: ctx.accounts.user_token_account.to_account_info().clone(),
-            authority: pool.to_account_info().clone(),
-        };
-
-        let cpi_program = ctx.accounts.token_program.to_account_info().clone();
-
-        let pool_signer_seeds = &[
-            pool.rand.as_ref(),
-            &[pool.bump],
-        ];
+        sol_transfer(
+            SolTransferParams {
+                source: pool.to_account_info().clone(),
+                destination: ctx.accounts.owner.clone(),
+                amount: _amount,
+            }
+        )?;
         
-        let pool_signer = &[&pool_signer_seeds[..]];
+        round.tvl -= _amount;
 
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, pool_signer);
+        Ok(())
+    }
 
-        token::transfer(cpi_ctx, ctx.accounts.pool_token_account.amount)?;
+    pub fn deposit {
+        ctx : Context<Deposit>,
+        _amount : u64
+    } -> ProgramResult {
+        msg!("+ deposit");
+
+        let pool = &mut ctx.accounts.pool;
+        let round = &mut ctx.accounts.round;
+
+        sol_transfer_without_seed(
+            SolTransferParamsWithoutSeed {
+                source: ctx.accounts.owner.clone(),
+                destination: pool.to_account_info().clone(),
+                system_program: ctx.accounts.system_program.to_account_info().clone(),
+                amount: _amount,
+            }
+        )?;
+        
+        round.tvl += _amount;
 
         Ok(())
     }
 }
 
+
 #[derive(Accounts)]
 #[instruction(_bump : u8)]
-pub struct InitLottery<'info>{
+pub struct InitPool<'info>{
     #[account(mut)]
     owner : Signer<'info>,
 
@@ -277,74 +239,64 @@ pub struct InitLottery<'info>{
         seeds = [(*rand.key).as_ref()], 
         bump = _bump, 
         payer = owner, 
-        space = 8 + lottery_SIZE)]
-    pool : ProgramAccount<'info, Lottery>,
+        space = 8 + POOL_SIZE)]
+    pool : ProgramAccount<'info, Pool>,
 
     rand : AccountInfo<'info>,
 
-    #[account(owner = spl_token::id())]
-    token_mint : Account<'info, Mint>,
+    fee_receiver : AccountInfo<'info>,
 
-    #[account(mut, 
-        constraint = ledger.owner == program_id)]
-    ledger : AccountInfo<'info>,
-
-    #[account(owner = spl_token::id())]
-    prize_mint : Account<'info, Mint>,
+    winner : AccountInfo<'info>,
 
     system_program : Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct UpdateLottery<'info> {
+#[instruction(_bump : u8, _round_name: String)]
+pub struct StartRound<'info>{
     #[account(mut)]
     owner : Signer<'info>,
 
     #[account(mut,
-        has_one = owner,
-        seeds = [pool.rand.as_ref()], 
-        bump = pool.bump)]
-    pool : ProgramAccount<'info, Lottery>,
+        has_one = owner)]
+    pool : ProgramAccount<'info, Pool>,
 
-    #[account(owner = spl_token::id())]
-    prize_mint : Account<'info, Mint>,
+    #[account(mut)]
+    ticket_ledger : AccountInfo<'info>,
+
+    #[account(init, 
+        seeds = [pool.key().as_ref(), _round_name.as_ref()], 
+        bump = _bump, 
+        payer = owner, 
+        space = 8 + ROUND_SIZE)]
+    round_data : ProgramAccount<'info, Round>,
+
+    clock : AccountInfo<'info>,
+
+    system_program : Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct NewLottery<'info> {
+pub struct FinishRound<'info>{
     #[account(mut)]
     owner : Signer<'info>,
 
     #[account(mut,
-        has_one = owner,
-        seeds = [pool.rand.as_ref()], 
-        bump = pool.bump)]
-    pool : ProgramAccount<'info, Lottery>,
+        has_one = owner)]
+    pool : ProgramAccount<'info, Pool>,
 
-    #[account(mut, 
-        constraint = ledger.owner == program_id)]
-    ledger : AccountInfo<'info>,
-
-    #[account(owner = spl_token::id())]
-    prize_mint : Account<'info, Mint>,
-}
-
-#[derive(Accounts)]
-pub struct FinishLottery<'info> {
     #[account(mut)]
-    owner : Signer<'info>,
+    ticket_ledger : AccountInfo<'info>,
 
     #[account(mut,
-        has_one = owner,
-        seeds = [pool.rand.as_ref()], 
-        bump = pool.bump)]
-    pool : ProgramAccount<'info, Lottery>,
+        has_one = pool,
+        has_one = ticket_ledger,
+        seeds = [round.pool.key().as_ref(), round.round_name.as_ref()], 
+        bump = round.bump)]
+    round : ProgramAccount<'info, Round>,
 
-    #[account(mut, 
-        constraint = ledger.owner == program_id)]
-    ledger : AccountInfo<'info>,
-
-    clock : AccountInfo<'info>
+    /// CHECK: checked in program.
+    recent_blockhashes: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -353,157 +305,170 @@ pub struct BuyTicket<'info> {
     owner : Signer<'info>,
 
     #[account(mut,
-        seeds = [pool.rand.as_ref()], 
-        bump = pool.bump)]
-    pool : ProgramAccount<'info, Lottery>,
+        has_one = fee_receiver)]
+    pool : ProgramAccount<'info, Pool>,
 
-    #[account(mut, 
-        constraint = ledger.owner == program_id)]
-    ledger : AccountInfo<'info>,
+    #[account(mut)]
+    fee_receiver : AccountInfo<'info>,
 
     #[account(mut,
-        constraint = user_token_account.owner == owner.key(),
-        constraint = user_token_account.mint == pool.token_mint)]
-    user_token_account:Account<'info, TokenAccount>,
+        has_one = pool,
+        has_one = ticket_ledger,
+        seeds = [round.pool.key().as_ref(), round.round_name.as_ref()], 
+        bump = round.bump)]
+    round : ProgramAccount<'info, Round>,
 
-    #[account(mut,
-        constraint = pool_token_account.owner == pool.key(),
-        constraint = pool_token_account.mint == pool.token_mint)]
-    pool_token_account:Account<'info, TokenAccount>,
+    #[account(mut)]
+    ticket_ledger : AccountInfo<'info>,
 
-    clock : AccountInfo<'info>,
-
-    token_program:Program<'info, Token>,
+    system_program : Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct GetPrize<'info> {
+pub struct Claim<'info> {
     #[account(mut)]
     owner : Signer<'info>,
 
-    #[account(mut,
-        seeds = [pool.rand.as_ref()], 
-        bump = pool.bump)]
-    pool : ProgramAccount<'info, Lottery>,
+    #[account(mut)]
+    pool : ProgramAccount<'info, Pool>,
 
     #[account(mut,
-        constraint = user_token_account.owner == owner.key(),
-        constraint = user_token_account.mint == pool.prize_mint)]
-    user_token_account:Account<'info, TokenAccount>,
-
-    #[account(mut,
-        constraint = pool_token_account.owner == pool.key(),
-        constraint = pool_token_account.mint == pool.prize_mint)]
-    pool_token_account:Account<'info, TokenAccount>,
-
-    clock : AccountInfo<'info>,
-
-    token_program:Program<'info, Token>,
+        has_one = pool,
+        seeds = [round.pool.key().as_ref(), round.round_name.as_ref()], 
+        bump = round.bump)]
+    round : ProgramAccount<'info, Round>
 }
 
 #[derive(Accounts)]
-pub struct Withdraw<'info>{
+pub struct Withdraw<'info> {
     #[account(mut)]
     owner : Signer<'info>,
 
     #[account(mut,
         has_one = owner)]
-    pool : ProgramAccount<'info,Lottery>,
+    pool : ProgramAccount<'info, Pool>,
 
     #[account(mut,
-        constraint = user_token_account.owner == owner.key(),
-        constraint = user_token_account.mint == pool.token_mint,
-        owner = spl_token::id())]
-    user_token_account:Account<'info, TokenAccount>,
-
-    #[account(mut,
-        constraint = pool_token_account.owner == pool.key(),
-        constraint = pool_token_account.mint == pool.token_mint,
-        owner = spl_token::id())]
-    pool_token_account:Account<'info, TokenAccount>,
-
-    token_program:Program<'info, Token>
+        has_one = pool,
+        seeds = [round.pool.key().as_ref(), round.round_name.as_ref()], 
+        bump = round.bump)]
+    round : ProgramAccount<'info, Round>
 }
 
 #[derive(Accounts)]
-pub struct EmergencyWithdraw<'info>{
+pub struct Deposit<'info> {
     #[account(mut)]
     owner : Signer<'info>,
 
     #[account(mut,
         has_one = owner)]
-    pool : ProgramAccount<'info,Lottery>,
+    pool : ProgramAccount<'info, Pool>,
 
     #[account(mut,
-        constraint = user_token_account.owner == owner.key(),
-        constraint = user_token_account.mint == pool.prize_mint,
-        owner = spl_token::id())]
-    user_token_account:Account<'info, TokenAccount>,
+        has_one = pool,
+        seeds = [round.pool.key().as_ref(), round.round_name.as_ref()], 
+        bump = round.bump)]
+    round : ProgramAccount<'info, Round>,
 
-    #[account(mut,
-        constraint = pool_token_account.owner == pool.key(),
-        constraint = pool_token_account.mint == pool.prize_mint,
-        owner = spl_token::id())]
-    pool_token_account:Account<'info, TokenAccount>,
-
-    token_program:Program<'info, Token>,
+    system_program : Program<'info, System>,
 }
 
-pub const LOTTERY_SIZE : usize = 32 + 32 + 32 + 32 + 8 + 4 + 8 + 8 + 32 + 4 + 32 + 1 + 1;
+pub const POOL_SIZE : usize = 32 + 32 + 32 + 32 + 8 + 1;
 #[account]
-pub struct Lottery {
+pub struct Pool {
     pub owner : Pubkey,
     pub rand : Pubkey,
-    pub token_mint : Pubkey,
-    pub prize_mint : Pubkey,
-    pub ticket_price : u64,
-    pub total_count : u32,
-    pub start_time : u64,
-    pub period : u64,
-    pub ledger : Pubkey,
-    pub win_ticket : u32,
+    pub fee_receiver : Pubkey,
     pub winner : Pubkey,
-    pub closed : bool,
+    pub fee : u64,
+    pub bump : u8,
+}
+
+pub const ROUND_SIZE : usize = 32 + 32 + 32 + 8 + 8 + 8 + 8 + 1 + 1 + 4 + 10 + 1;
+#[account]
+pub struct Round {
+    pub pool : Pubkey,
+    pub ticket_ledger : Pubkey,
+    pub winner : Pubkey,
+    pub total_ticket : u64,
+    pub start_time : u64,
+    pub round_period : u64,
+    pub tvl : u64,
+    pub claimed : bool,
+    pub finished : bool,
+    pub round_name : String,
     pub bump : u8
 }
 
-pub const LEDGER_SIZE : usize = 4 + 32 * 3000;
+pub const MAX_LEN : usize = 10000;
+pub const POOL_LEDGER_SIZE : usize = 32 + 4 + TICKET_DATA_SIZE * MAX_LEN;
 #[account]
 #[derive(Default)]
-pub struct LEDGER{
-    pub ledger : Vec<Pubkey>
+pub struct TicketList {
+    pub round : Pubkey,
+    pub last_number : u32,
+    pub ticket_ledger : Vec<TicketData>
 }
 
-pub const MAX_LEN : usize = 3000;
+pub const TICKET_DATA_SIZE : usize = 8 + 32;
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
+pub struct TicketData{
+    pub ticket_index : u64,
+    pub owner : Pubkey,
+}
 
-pub fn sell_ticket(
+pub fn set_ticket_owner(
     a: &mut AccountInfo,
     index : usize,
-    buyer : Pubkey,
+    ticket_data : TicketData,
     ){
     let mut arr = a.data.borrow_mut();
-    let data_array = buyer.try_to_vec().unwrap();
-    let vec_start = 4 + 32 * index;
+    let data_array = ticket_data.try_to_vec().unwrap();
+    let vec_start = 8 + 32 + 4 + TICKET_DATA_SIZE * index;
     for i in 0..data_array.len(){
         arr[vec_start+i] = data_array[i];
     }
 }
 
-pub fn get_ticket_owner(
+pub fn set_last_number(
+    a: &mut AccountInfo,
+    number : u32,
+    ){
+    let mut arr = a.data.borrow_mut();
+    let data_array = number.try_to_vec().unwrap();
+    let vec_start = 40;
+    for i in 0..data_array.len() {
+        arr[vec_start+i] = data_array[i];
+    }    
+}
+
+pub fn get_winning_ticket(
     a : &AccountInfo,
     index : usize,
-    ) -> core::result::Result<Pubkey, ProgramError> {
+    ) -> core::result::Result<TicketData, ProgramError> {
     let arr = a.data.borrow();
-    let vec_start = 4 + 32 * index;
-    let data_array = &arr[vec_start..vec_start+32];
-    let owner : Pubkey = Pubkey::try_from_slice(data_array)?;
-    Ok(owner)
+    let vec_start = 8 + 32 + 4 + TICKET_DATA_SIZE * index;
+    let data_array = &arr[vec_start..vec_start+TICKET_DATA_SIZE];
+    let ticket_data : TicketData = TicketData::try_from_slice(data_array)?;
+    Ok(ticket_data)
+}
+
+pub fn get_last_number(
+    a : &AccountInfo
+    ) -> core::result::Result<u32, ProgramError>{
+    let arr= a.data.borrow();
+    let data_array = &arr[40..44];
+    let last_number : u32 = u32::try_from_slice(data_array)?;
+    Ok(last_number)
 }
 
 #[error]
 pub enum PoolError {
-    #[msg("Token mint to failed")]
-    TokenMintToFailed,
+    #[msg("Current round is not finihsed yet")]
+    RoundNotFinished,
+
+    #[msg("All tickets are already sold")]
+    TicketLimitReached,
 
     #[msg("Token set authority failed")]
     TokenSetAuthorityFailed,
@@ -514,8 +479,8 @@ pub enum PoolError {
     #[msg("Token burn failed")]
     TokenBurnFailed,
 
-    #[msg("Invalid token account")]
-    InvalidTokenAccount,
+    #[msg("Invalid Ranking")]
+    InvalidRanking,
 
     #[msg("Invalid time")]
     InvalidTime,
@@ -526,15 +491,18 @@ pub enum PoolError {
     #[msg("Invalid period")]
     InvalidPeriod,
 
-    #[msg("Invalid owner")]
-    InvalidOwner,
+    #[msg("Invalid metadata extended account")]
+    InvalidMetadataExtended,
 
     #[msg("Invalid token mint")]
     InvalidTokenMint,
 
-    #[msg("Invalid stake amount")]
-    InvalidStakeAmount,
-
     #[msg("Invalid winner")]
     InvalidWinner,
+
+    #[msg("Invalid withdraw amount")]
+    InvalidWithdrawAmount,
+
+    #[msg("Incorrect collection NFT authority")]
+    IncorrectSlotHashesPubkey,
 }
